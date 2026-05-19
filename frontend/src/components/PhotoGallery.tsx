@@ -2,13 +2,18 @@ import { useEffect, useState } from "react";
 import type { Face, Photo } from "../types";
 import { ArrowLeft, Download, X, ChevronLeft, ChevronRight, ImageOff } from "lucide-react";
 
+function thumbUrl(url: string, width: number, quality = 75): string {
+  return url.replace("/object/public/", "/render/image/public/") + `?width=${width}&quality=${quality}`;
+}
+
 interface Props {
   face: Face;
   photos: Photo[];
+  downloadUrl: string;
   onBack: () => void;
 }
 
-export function PhotoGallery({ face, photos, onBack }: Props) {
+export function PhotoGallery({ face, photos, downloadUrl, onBack }: Props) {
   const [lightbox, setLightbox] = useState<number | null>(null);
   const [failedIds, setFailedIds] = useState<Set<string>>(new Set());
 
@@ -28,7 +33,7 @@ export function PhotoGallery({ face, photos, onBack }: Props) {
   return (
     <section className="w-full animate-fade-in">
       {/* header */}
-      <div className="mb-6 flex items-center gap-4">
+      <div className="mb-6 flex flex-wrap items-center gap-4">
         <button
           onClick={onBack}
           className="flex items-center gap-1.5 rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-medium text-gray-600 shadow-sm hover:border-brand-500 hover:text-brand-600 transition-colors"
@@ -50,6 +55,16 @@ export function PhotoGallery({ face, photos, onBack }: Props) {
             {failedIds.size > 0 ? ` · ${failedIds.size} görsel yüklenemedi` : ""}
           </p>
         </div>
+
+        {photos.length > 0 && (
+          <a
+            href={downloadUrl}
+            className="ml-auto inline-flex items-center gap-2 rounded-xl bg-brand-500 px-4 py-2 text-sm font-semibold text-white shadow-sm transition-colors hover:bg-brand-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500 focus-visible:ring-offset-2"
+          >
+            <Download size={16} />
+            Hepsini indir
+          </a>
+        )}
       </div>
 
       <div className="mb-4 flex items-center justify-between border-b border-gray-200 pb-3 text-xs text-gray-500">
@@ -75,7 +90,7 @@ export function PhotoGallery({ face, photos, onBack }: Props) {
               </div>
             ) : (
               <img
-                src={photo.url}
+                src={thumbUrl(photo.url, 400)}
                 alt=""
                 className="h-full w-full object-cover transition-transform group-hover:scale-105"
                 loading="lazy"
@@ -170,7 +185,7 @@ function Lightbox({ photo, index, total, onClose, onPrev, onNext }: LightboxProp
 
       {/* image */}
       <img
-        src={photo.url}
+        src={thumbUrl(photo.url, 1920, 85)}
         alt=""
         className="max-h-[90vh] max-w-[90vw] rounded-xl object-contain shadow-2xl"
         onClick={(e) => e.stopPropagation()}
