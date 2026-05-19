@@ -27,7 +27,7 @@ export default function App() {
   const selectedFace = selectedFaceId
     ? faces.find((face) => face.id === selectedFaceId) ?? null
     : null;
-  const { photos, loading: photosLoading } = useFacePhotos(selectedFace?.id ?? null);
+  const { photos, loading: photosLoading, error: photosError } = useFacePhotos(selectedFace?.id ?? null);
 
   useEffect(() => {
     function handlePopState() {
@@ -95,6 +95,11 @@ export default function App() {
       {actionError && (
         <div className="mb-4 rounded-xl bg-red-50 px-4 py-3 text-sm text-red-600">
           {actionError}
+        </div>
+      )}
+      {photosError && (
+        <div className="mb-4 rounded-xl bg-red-50 px-4 py-3 text-sm text-red-600">
+          Fotoğraf yükleme hatası: {photosError}
         </div>
       )}
 

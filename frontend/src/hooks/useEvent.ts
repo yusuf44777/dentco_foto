@@ -29,8 +29,15 @@ export function useFacePhotos(faceId: string | null) {
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    if (!faceId) return;
+    if (!faceId) {
+      setPhotos([]);
+      setError(null);
+      setLoading(false);
+      return;
+    }
     setLoading(true);
+    setError(null);
+    setPhotos([]);
     api.faces.photos(faceId)
       .then(setPhotos)
       .catch((e: Error) => setError(e.message))

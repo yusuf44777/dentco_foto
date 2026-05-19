@@ -7,8 +7,15 @@ Restart-safe: already-processed photos are skipped automatically.
 """
 
 import argparse
+import io
 import logging
+import os
+from pathlib import Path
+import subprocess
+import tempfile
 
+import pillow_heif
+from PIL import Image, ImageOps
 from tqdm import tqdm
 
 from app.core.config import settings
@@ -18,6 +25,48 @@ from app.services.face_processor import process_photo
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
+
+pillow_heif.register_heif_opener()
+
+
+def _to_browser_display_image(filename: str, image_bytes: bytes, mime_type: str | None):
+    """Convert HEIC/HEIF originals to JPEG so browsers can render gallery images."""
+    suffix = Path(filename).suffix.lower()
+    mime = (mime_type or "").lower()
+    if suffix not in {".heic", ".heif"} and mime not in {"image/heic", "image/heif"}:
+        ext = suffix.lstrip(".") or "jpg"
+        content_type = mime_type or "image/jpeg"
+        return image_bytes, ext, content_type
+
+    try:
+        img = Image.open(io.BytesIO(image_bytes))
+        img = ImageOps.exif_transpose(img).convert("RGB")
+        out = io.BytesIO()
+        img.save(out, format="JPEG", quality=92, optimize=True)
+        return out.getvalue(), "jpg", "image/jpeg"
+    except Exception:
+        pass
+
+    src = dst = None
+    try:
+        with tempfile.NamedTemporaryFile(suffix=".heic", delete=False) as temp:
+            temp.write(image_bytes)
+            src = temp.name
+        dst = f"{src}.jpg"
+        result = subprocess.run(
+            ["sips", "-s", "format", "jpeg", src, "--out", dst],
+            capture_output=True,
+            timeout=45,
+            check=False,
+        )
+        if result.returncode != 0:
+            raise ValueError(result.stderr.decode("utf-8", errors="ignore") or "sips failed")
+        with open(dst, "rb") as f:
+            return f.read(), "jpg", "image/jpeg"
+    finally:
+        for path in (src, dst):
+            if path and os.path.exists(path):
+                os.unlink(path)
 
 
 @with_retry()
@@ -37,9 +86,12 @@ def _get_processed_drive_ids(event_id: str) -> set[str]:
 @with_retry()
 def _register_photo(event_id: str, drive_file_id: str, storage_path: str) -> str:
     sb = get_client()
-    existing = sb.table("photos").select("id").eq("drive_file_id", drive_file_id).execute()
+    existing = sb.table("photos").select("id, storage_path").eq("drive_file_id", drive_file_id).execute()
     if existing.data:
-        return existing.data[0]["id"]
+        photo = existing.data[0]
+        if photo.get("storage_path") != storage_path:
+            sb.table("photos").update({"storage_path": storage_path}).eq("id", photo["id"]).execute()
+        return photo["id"]
     res = sb.table("photos").insert({
         "event_id": event_id,
         "drive_file_id": drive_file_id,
@@ -70,14 +122,18 @@ def run_ingestion(event_id: str, folder_id: str | None = None):
             skipped += 1
             continue
 
-        ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else "jpg"
+        upload_bytes, ext, content_type = _to_browser_display_image(
+            filename,
+            image_bytes,
+            meta.get("mimeType"),
+        )
         storage_path = f"events/{event_id}/photos/{drive_id}.{ext}"
 
         try:
             sb.storage.from_(settings.storage_bucket).upload(
                 path=storage_path,
-                file=image_bytes,
-                file_options={"content-type": meta.get("mimeType", "image/jpeg"), "upsert": "true"},
+                file=upload_bytes,
+                file_options={"content-type": content_type, "upsert": "true"},
             )
         except Exception as e:
             logger.error("Storage upload failed for %s: %s", filename, e)
