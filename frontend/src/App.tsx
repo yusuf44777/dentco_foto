@@ -19,11 +19,9 @@ function getFaceIdFromPath() {
 }
 
 export default function App() {
-  const { faces, loading: facesLoading, error, reload } = useFaces();
+  const { faces, loading: facesLoading, error } = useFaces();
   const [selectedFaceId, setSelectedFaceId] = useState<string | null>(() => getFaceIdFromPath());
-  const [actionError, setActionError] = useState<string | null>(null);
-  const [merging, setMerging] = useState(false);
-  const [deleting, setDeleting] = useState(false);
+  const [routeError, setRouteError] = useState<string | null>(null);
   const selectedFace = selectedFaceId
     ? faces.find((face) => face.id === selectedFaceId) ?? null
     : null;
@@ -40,49 +38,21 @@ export default function App() {
 
   useEffect(() => {
     if (!selectedFaceId || facesLoading || faces.length === 0 || selectedFace) return;
-    setActionError("Bu kişi klasörü bulunamadı ya da silinmiş.");
-    navigateHome({ replace: true });
+    setRouteError("Bu kişi klasörü bulunamadı.");
+    navigateHome({ replace: true, clearMessage: false });
   }, [faces, facesLoading, selectedFace, selectedFaceId]);
 
-  function navigateHome({ replace = false } = {}) {
+  function navigateHome({ replace = false, clearMessage = true } = {}) {
     const method = replace ? "replaceState" : "pushState";
     window.history[method]({ view: "home" }, "", "/");
     setSelectedFaceId(null);
+    if (clearMessage) setRouteError(null);
   }
 
   function handleSelectFace(face: Face) {
     window.history.pushState({ view: "face", faceId: face.id }, "", facePath(face.id));
     setSelectedFaceId(face.id);
-  }
-
-  async function handleMerge(targetFaceId: string, sourceFaceIds: string[]) {
-    setMerging(true);
-    setActionError(null);
-    try {
-      await api.faces.merge(targetFaceId, sourceFaceIds);
-      navigateHome({ replace: true });
-      await reload();
-    } catch (e) {
-      setActionError(e instanceof Error ? `Birleştirme hatası: ${e.message}` : "Birleştirme başarısız oldu");
-    } finally {
-      setMerging(false);
-    }
-  }
-
-  async function handleDelete(faceIds: string[]) {
-    setDeleting(true);
-    setActionError(null);
-    try {
-      await api.faces.deleteMany(faceIds);
-      if (selectedFaceId && faceIds.includes(selectedFaceId)) {
-        navigateHome({ replace: true });
-      }
-      await reload();
-    } catch (e) {
-      setActionError(e instanceof Error ? `Silme hatası: ${e.message}` : "Silme başarısız oldu");
-    } finally {
-      setDeleting(false);
-    }
+    setRouteError(null);
   }
 
   return (
@@ -92,9 +62,9 @@ export default function App() {
           Bağlantı hatası: {error}
         </div>
       )}
-      {actionError && (
+      {routeError && (
         <div className="mb-4 rounded-xl bg-red-50 px-4 py-3 text-sm text-red-600">
-          {actionError}
+          {routeError}
         </div>
       )}
       {photosError && (
@@ -110,10 +80,6 @@ export default function App() {
             <FaceGrid
               faces={faces}
               onSelect={handleSelectFace}
-              onMerge={handleMerge}
-              onDelete={handleDelete}
-              merging={merging}
-              deleting={deleting}
             />
           )
       ) : facesLoading || !selectedFace || photosLoading
@@ -122,6 +88,7 @@ export default function App() {
             <PhotoGallery
               face={selectedFace}
               photos={photos}
+              downloadUrl={api.faces.download(selectedFace.id)}
               onBack={() => navigateHome({ replace: true })}
             />
           )}

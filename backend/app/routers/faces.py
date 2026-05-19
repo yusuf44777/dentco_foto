@@ -1,24 +1,17 @@
-import json
-import logging
+import os
+import re
+import tempfile
+import zipfile
+from pathlib import Path
 
-import numpy as np
 from fastapi import APIRouter, HTTPException, Query
-from pydantic import BaseModel
+from starlette.background import BackgroundTask
+from starlette.responses import FileResponse
 
 from app.core.supabase import get_client
 from app.core.config import settings
 
 router = APIRouter(prefix="/faces", tags=["faces"])
-logger = logging.getLogger(__name__)
-
-
-class MergeFacesRequest(BaseModel):
-    target_face_id: str
-    source_face_ids: list[str]
-
-
-class DeleteFacesRequest(BaseModel):
-    face_ids: list[str]
 
 
 def _chunks(items: list[str], size: int = 75):
@@ -39,41 +32,71 @@ def _fetch_all(query, page_size: int = 1000) -> list[dict]:
     return rows
 
 
-def _parse_embedding(value) -> np.ndarray | None:
-    if value is None:
-        return None
-    if isinstance(value, str):
-        value = json.loads(value)
-    return np.asarray(value, dtype=np.float32)
+def _safe_filename(value: str | None, fallback: str) -> str:
+    cleaned = re.sub(r"[^A-Za-z0-9._-]+", "_", value or "").strip("._-")
+    return cleaned or fallback
 
 
-def _refresh_photo_count(sb, face_id: str) -> int:
-    res = sb.table("photo_faces").select("id", count="exact").eq("face_id", face_id).execute()
-    count = res.count or 0
-    sb.table("faces").update({"photo_count": count}).eq("id", face_id).execute()
-    return count
+def _photo_rows_for_face(sb, face_id: str) -> list[dict]:
+    return _fetch_all(
+        sb.table("photo_faces")
+        .select("photos(id, storage_path, taken_at), bbox_x, bbox_y, bbox_w, bbox_h")
+        .eq("face_id", face_id)
+    )
 
 
-def _update_merged_centroid(sb, target: dict, sources: list[dict]):
-    vectors: list[np.ndarray] = []
-    weights: list[int] = []
+def _zip_entry_name(index: int, storage_path: str) -> str:
+    original = _safe_filename(Path(storage_path).name, f"photo_{index:04d}.jpg")
+    stem, ext = os.path.splitext(original)
+    if not ext:
+        ext = ".jpg"
+    return f"{index:04d}_{_safe_filename(stem, 'photo')}{ext.lower()}"
 
-    for face in [target, *sources]:
-        embedding = _parse_embedding(face.get("embedding"))
-        if embedding is None:
-            continue
-        vectors.append(embedding)
-        weights.append(max(int(face.get("photo_count") or 0), 1))
 
-    if not vectors:
-        return
+def _cleanup_file(path: str):
+    try:
+        os.unlink(path)
+    except FileNotFoundError:
+        pass
 
-    merged = np.average(np.vstack(vectors), axis=0, weights=np.asarray(weights))
-    norm = np.linalg.norm(merged)
-    if norm == 0:
-        return
 
-    sb.table("faces").update({"embedding": (merged / norm).tolist()}).eq("id", target["id"]).execute()
+def _write_photos_zip(sb, rows: list[dict]) -> tuple[str, int]:
+    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".zip")
+    zip_path = tmp.name
+    tmp.close()
+
+    written = 0
+    failures: list[str] = []
+    bucket = sb.storage.from_(settings.storage_bucket)
+
+    try:
+        with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+            for index, row in enumerate(rows, start=1):
+                photo = row.get("photos") or {}
+                storage_path = photo.get("storage_path")
+                if not storage_path:
+                    continue
+
+                try:
+                    archive.writestr(_zip_entry_name(index, storage_path), bucket.download(storage_path))
+                    written += 1
+                except Exception as exc:
+                    failures.append(f"{storage_path}: {exc}")
+
+            if failures:
+                archive.writestr(
+                    "_eksik_fotograflar.txt",
+                    "Bu dosyalar storage'dan indirilemedi:\n" + "\n".join(failures),
+                )
+    except Exception:
+        _cleanup_file(zip_path)
+        raise
+
+    if written == 0:
+        _cleanup_file(zip_path)
+        raise HTTPException(status_code=404, detail="No downloadable photos found for this face")
+
+    return zip_path, written
 
 
 @router.get("/")
@@ -89,7 +112,8 @@ def list_faces(event_id: str = Query(...)):
     )
     # Attach public URL for the avatar
     bucket = settings.storage_bucket
-    face_ids = [face["id"] for face in res.data]
+    faces = res.data or []
+    face_ids = [face["id"] for face in faces]
     exact_counts = {face_id: 0 for face_id in face_ids}
     for chunk in _chunks(face_ids):
         links = _fetch_all(
@@ -100,138 +124,47 @@ def list_faces(event_id: str = Query(...)):
         for link in links:
             exact_counts[link["face_id"]] = exact_counts.get(link["face_id"], 0) + 1
 
-    for face in res.data:
+    for face in faces:
         face["avatar_url"] = sb.storage.from_(bucket).get_public_url(face["avatar_path"])
         face["photo_count"] = exact_counts.get(face["id"], int(face.get("photo_count") or 0))
-    res.data.sort(key=lambda face: face["photo_count"], reverse=True)
-    return res.data
+    faces.sort(key=lambda face: face["photo_count"], reverse=True)
+    return faces
 
 
-@router.post("/merge")
-def merge_faces(body: MergeFacesRequest):
-    """Merge duplicate face clusters into a single target face."""
-    source_ids = [face_id for face_id in body.source_face_ids if face_id != body.target_face_id]
-    if not source_ids:
-        raise HTTPException(status_code=400, detail="source_face_ids must contain another face")
-
+@router.get("/{face_id}/download")
+def download_face_photos(face_id: str):
+    """Download all photos for a face cluster as a ZIP archive."""
     sb = get_client()
-    face_ids = [body.target_face_id, *source_ids]
-    faces_res = (
-        sb.table("faces")
-        .select("id, event_id, embedding, photo_count")
-        .in_("id", face_ids)
-        .execute()
+    face_res = sb.table("faces").select("id, label").eq("id", face_id).limit(1).execute()
+    faces = face_res.data or []
+    if not faces:
+        raise HTTPException(status_code=404, detail="Face not found")
+
+    rows = _photo_rows_for_face(sb, face_id)
+    if not rows:
+        raise HTTPException(status_code=404, detail="No photos found for this face")
+
+    zip_path, written = _write_photos_zip(sb, rows)
+    label = _safe_filename(faces[0].get("label") or f"kisi_{face_id[:8]}", "dentco_fotograflar")
+    filename = f"{label}_{written}_fotograf.zip"
+    return FileResponse(
+        zip_path,
+        media_type="application/zip",
+        filename=filename,
+        background=BackgroundTask(_cleanup_file, zip_path),
     )
-    faces_by_id = {face["id"]: face for face in faces_res.data}
-    missing = [face_id for face_id in face_ids if face_id not in faces_by_id]
-    if missing:
-        raise HTTPException(status_code=404, detail=f"Face not found: {', '.join(missing)}")
-
-    target = faces_by_id[body.target_face_id]
-    sources = [faces_by_id[face_id] for face_id in source_ids]
-    if any(face["event_id"] != target["event_id"] for face in sources):
-        raise HTTPException(status_code=400, detail="All faces must belong to the same event")
-
-    _update_merged_centroid(sb, target, sources)
-
-    links_res = (
-        sb.table("photo_faces")
-        .select("photo_id, bbox_x, bbox_y, bbox_w, bbox_h, confidence")
-        .in_("face_id", source_ids)
-        .execute()
-    )
-    for link in links_res.data:
-        sb.table("photo_faces").upsert(
-            {
-                "photo_id": link["photo_id"],
-                "face_id": body.target_face_id,
-                "bbox_x": link["bbox_x"],
-                "bbox_y": link["bbox_y"],
-                "bbox_w": link["bbox_w"],
-                "bbox_h": link["bbox_h"],
-                "confidence": link["confidence"],
-            },
-            on_conflict="photo_id,face_id",
-        ).execute()
-
-    sb.table("photo_faces").delete().in_("face_id", source_ids).execute()
-    sb.table("faces").delete().in_("id", source_ids).execute()
-    photo_count = _refresh_photo_count(sb, body.target_face_id)
-
-    return {
-        "target_face_id": body.target_face_id,
-        "merged_face_ids": source_ids,
-        "photo_count": photo_count,
-    }
-
-
-def _delete_faces(face_ids: list[str]):
-    unique_ids = list(dict.fromkeys(face_ids))
-    if not unique_ids:
-        raise HTTPException(status_code=400, detail="face_ids must not be empty")
-
-    sb = get_client()
-    rows = []
-    for chunk in _chunks(unique_ids):
-        res = (
-            sb.table("faces")
-            .select("id, avatar_path")
-            .in_("id", chunk)
-            .execute()
-        )
-        rows.extend(res.data or [])
-
-    found_by_id = {row["id"]: row for row in rows}
-    missing = [face_id for face_id in unique_ids if face_id not in found_by_id]
-    if missing:
-        raise HTTPException(status_code=404, detail=f"Face not found: {', '.join(missing)}")
-
-    for chunk in _chunks(unique_ids):
-        sb.table("faces").delete().in_("id", chunk).execute()
-
-    avatar_paths = [row.get("avatar_path") for row in rows if row.get("avatar_path")]
-    avatar_delete_failed = False
-    if avatar_paths:
-        try:
-            for chunk in _chunks(avatar_paths):
-                sb.storage.from_(settings.storage_bucket).remove(chunk)
-        except Exception as exc:
-            avatar_delete_failed = True
-            logger.warning("Deleted faces but failed to remove avatar files: %s", exc)
-
-    return {
-        "deleted_face_ids": unique_ids,
-        "deleted_count": len(unique_ids),
-        "avatar_delete_failed": avatar_delete_failed,
-    }
-
-
-@router.post("/delete")
-def delete_faces(body: DeleteFacesRequest):
-    """Delete bogus face clusters without deleting the underlying photos."""
-    return _delete_faces(body.face_ids)
-
-
-@router.delete("/{face_id}")
-def delete_face(face_id: str):
-    """Delete one bogus face cluster without deleting the underlying photos."""
-    return _delete_faces([face_id])
 
 
 @router.get("/{face_id}/photos")
 def get_photos_for_face(face_id: str):
     """Return all photos that contain this face."""
     sb = get_client()
-    res = (
-        sb.table("photo_faces")
-        .select("photos(id, storage_path, taken_at), bbox_x, bbox_y, bbox_w, bbox_h")
-        .eq("face_id", face_id)
-        .execute()
-    )
     bucket = settings.storage_bucket
     photos = []
-    for row in res.data:
-        p = row["photos"]
+    for row in _photo_rows_for_face(sb, face_id):
+        if not row.get("photos"):
+            continue
+        p = dict(row["photos"])
         p["url"] = sb.storage.from_(bucket).get_public_url(p["storage_path"])
         p["bbox"] = {k: row[k] for k in ("bbox_x", "bbox_y", "bbox_w", "bbox_h")}
         photos.append(p)
