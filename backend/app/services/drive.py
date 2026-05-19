@@ -39,6 +39,20 @@ _PHOTO_EXTENSIONS = {
 
 
 def _build_service():
+    missing = [
+        name
+        for name, value in {
+            "GOOGLE_DRIVE_OAUTH_CLIENT_ID": settings.google_drive_oauth_client_id,
+            "GOOGLE_DRIVE_OAUTH_CLIENT_SECRET": settings.google_drive_oauth_client_secret,
+            "GOOGLE_DRIVE_OAUTH_REFRESH_TOKEN": settings.google_drive_oauth_refresh_token,
+        }.items()
+        if not value
+    ]
+    if missing:
+        raise RuntimeError(
+            "Missing Google Drive environment variable(s): " + ", ".join(missing)
+        )
+
     creds = Credentials(
         token=None,
         refresh_token=settings.google_drive_oauth_refresh_token,
@@ -144,7 +158,11 @@ def list_photo_files(folder_id: str | None = None) -> list[dict]:
     Descends into subfolders automatically.
     """
     service = _build_service()
-    root = _extract_drive_id(folder_id or settings.google_drive_folder_id)
+    configured_folder = folder_id or settings.google_drive_folder_id
+    if not configured_folder:
+        raise RuntimeError("Missing Google Drive folder id. Set GOOGLE_DRIVE_FOLDER_ID or pass folder_id.")
+
+    root = _extract_drive_id(configured_folder)
     _validate_folder_access(service, root)
 
     photos: list[dict] = []

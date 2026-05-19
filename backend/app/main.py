@@ -16,6 +16,7 @@ import os
 ALLOWED_ORIGINS = [
     "http://localhost:5173",
     "https://dentcooutliersfoto.vercel.app",
+    "https://dentco-foto.vercel.app",
     *([o] if (o := os.getenv("EXTRA_ORIGIN")) else []),
 ]
 

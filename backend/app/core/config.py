@@ -4,10 +4,10 @@ class Settings(BaseSettings):
     supabase_url: str
     supabase_service_role_key: str
 
-    google_drive_oauth_client_id: str
-    google_drive_oauth_client_secret: str
-    google_drive_oauth_refresh_token: str
-    google_drive_folder_id: str
+    google_drive_oauth_client_id: str | None = None
+    google_drive_oauth_client_secret: str | None = None
+    google_drive_oauth_refresh_token: str | None = None
+    google_drive_folder_id: str | None = None
 
     face_similarity_threshold: float = 0.50
     yolo_confidence: float = 0.50
