@@ -88,7 +88,6 @@ export default function App() {
             <PhotoGallery
               face={selectedFace}
               photos={photos}
-              downloadUrl={api.faces.download(selectedFace.id)}
               onBack={() => navigateHome({ replace: true })}
             />
           )}

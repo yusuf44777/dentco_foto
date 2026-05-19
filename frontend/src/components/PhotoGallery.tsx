@@ -5,13 +5,42 @@ import { ArrowLeft, Download, X, ChevronLeft, ChevronRight, ImageOff } from "luc
 interface Props {
   face: Face;
   photos: Photo[];
-  downloadUrl: string;
   onBack: () => void;
 }
 
-export function PhotoGallery({ face, photos, downloadUrl, onBack }: Props) {
+export function PhotoGallery({ face, photos, onBack }: Props) {
   const [lightbox, setLightbox] = useState<number | null>(null);
   const [failedIds, setFailedIds] = useState<Set<string>>(new Set());
+  const [downloading, setDownloading] = useState(false);
+  const [downloadProgress, setDownloadProgress] = useState(0);
+
+  async function downloadAll() {
+    if (downloading) return;
+    setDownloading(true);
+    setDownloadProgress(0);
+    try {
+      const JSZip = (await import("jszip")).default;
+      const zip = new JSZip();
+      for (let i = 0; i < photos.length; i++) {
+        const res = await fetch(photos[i].url);
+        const blob = await res.blob();
+        zip.file(`dentco-outliers_${String(i + 1).padStart(3, "0")}.jpg`, blob);
+        setDownloadProgress(i + 1);
+      }
+      const content = await zip.generateAsync({ type: "blob", compression: "STORE" });
+      const url = URL.createObjectURL(content);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `dentco-outliers_${face.label ?? "kisi"}_${photos.length}foto.zip`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch {
+      alert("İndirme başarısız oldu, tekrar dene.");
+    } finally {
+      setDownloading(false);
+      setDownloadProgress(0);
+    }
+  }
 
   function openLightbox(idx: number) { setLightbox(idx); }
   function closeLightbox() { setLightbox(null); }
@@ -53,13 +82,17 @@ export function PhotoGallery({ face, photos, downloadUrl, onBack }: Props) {
         </div>
 
         {photos.length > 0 && (
-          <a
-            href={downloadUrl}
-            className="ml-auto inline-flex items-center gap-2 rounded-xl bg-brand-500 px-4 py-2 text-sm font-semibold text-white shadow-sm transition-colors hover:bg-brand-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500 focus-visible:ring-offset-2"
+          <button
+            type="button"
+            onClick={downloadAll}
+            disabled={downloading}
+            className="ml-auto inline-flex items-center gap-2 rounded-xl bg-brand-500 px-4 py-2 text-sm font-semibold text-white shadow-sm transition-colors hover:bg-brand-600 disabled:opacity-60 disabled:cursor-not-allowed focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500 focus-visible:ring-offset-2"
           >
             <Download size={16} />
-            Hepsini indir
-          </a>
+            {downloading
+              ? `İndiriliyor... ${downloadProgress}/${photos.length}`
+              : "Hepsini indir"}
+          </button>
         )}
       </div>
 
