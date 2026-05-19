@@ -4,14 +4,23 @@ import tempfile
 import zipfile
 from pathlib import Path
 
-from fastapi import APIRouter, HTTPException, Query
+import json
+import numpy as np
+from fastapi import APIRouter, Depends, HTTPException, Query
+from pydantic import BaseModel, Field
 from starlette.background import BackgroundTask
 from starlette.responses import FileResponse
 
+from app.core.auth import require_admin
 from app.core.supabase import get_client
 from app.core.config import settings
 
 router = APIRouter(prefix="/faces", tags=["faces"])
+
+
+class MergeFacesRequest(BaseModel):
+    target_face_id: str
+    source_face_ids: list[str] = Field(min_length=1)
 
 
 def _chunks(items: list[str], size: int = 75):
@@ -35,6 +44,42 @@ def _fetch_all(query, page_size: int = 1000) -> list[dict]:
 def _safe_filename(value: str | None, fallback: str) -> str:
     cleaned = re.sub(r"[^A-Za-z0-9._-]+", "_", value or "").strip("._-")
     return cleaned or fallback
+
+
+def _parse_embedding(value) -> np.ndarray:
+    if isinstance(value, str):
+        value = json.loads(value)
+    arr = np.asarray(value, dtype=np.float32)
+    norm = np.linalg.norm(arr)
+    if norm == 0:
+        raise ValueError("zero embedding")
+    return arr / norm
+
+
+def _refresh_photo_count(sb, face_id: str) -> int:
+    res = sb.table("photo_faces").select("id", count="exact").eq("face_id", face_id).execute()
+    count = res.count or 0
+    sb.table("faces").update({"photo_count": count}).eq("id", face_id).execute()
+    return count
+
+
+def _update_merged_embedding(sb, target_id: str, face_rows: list[dict]) -> None:
+    vectors = []
+    weights = []
+    for face in face_rows:
+        if face.get("embedding") is None:
+            continue
+        vectors.append(_parse_embedding(face["embedding"]))
+        weights.append(max(int(face.get("photo_count") or 0), 1))
+
+    if not vectors:
+        return
+
+    merged = np.average(np.vstack(vectors), axis=0, weights=np.asarray(weights))
+    norm = np.linalg.norm(merged)
+    if norm == 0:
+        return
+    sb.table("faces").update({"embedding": (merged / norm).tolist()}).eq("id", target_id).execute()
 
 
 def _photo_rows_for_face(sb, face_id: str) -> list[dict]:
@@ -131,6 +176,66 @@ def list_faces(event_id: str = Query(...)):
     return faces
 
 
+@router.post("/merge")
+def merge_faces(body: MergeFacesRequest, _: None = Depends(require_admin)):
+    """Merge source face clusters into the selected target cluster."""
+    source_ids = list(dict.fromkeys(body.source_face_ids))
+    if body.target_face_id in source_ids:
+        raise HTTPException(status_code=400, detail="Target face cannot also be a source face")
+
+    all_ids = [body.target_face_id, *source_ids]
+    sb = get_client()
+    face_rows = (
+        sb.table("faces")
+        .select("id, event_id, embedding, photo_count")
+        .in_("id", all_ids)
+        .execute()
+        .data
+        or []
+    )
+    if len(face_rows) != len(all_ids):
+        raise HTTPException(status_code=404, detail="One or more faces were not found")
+
+    event_ids = {face["event_id"] for face in face_rows}
+    if len(event_ids) != 1:
+        raise HTTPException(status_code=400, detail="Faces must belong to the same event")
+
+    _update_merged_embedding(sb, body.target_face_id, face_rows)
+
+    rows = []
+    for chunk in _chunks(source_ids):
+        rows.extend(_fetch_all(
+            sb.table("photo_faces")
+            .select("photo_id, bbox_x, bbox_y, bbox_w, bbox_h, confidence")
+            .in_("face_id", chunk)
+        ))
+
+    for row in rows:
+        sb.table("photo_faces").upsert(
+            {
+                "photo_id": row["photo_id"],
+                "face_id": body.target_face_id,
+                "bbox_x": row["bbox_x"],
+                "bbox_y": row["bbox_y"],
+                "bbox_w": row["bbox_w"],
+                "bbox_h": row["bbox_h"],
+                "confidence": row["confidence"],
+            },
+            on_conflict="photo_id,face_id",
+        ).execute()
+
+    for chunk in _chunks(source_ids):
+        sb.table("photo_faces").delete().in_("face_id", chunk).execute()
+        sb.table("faces").delete().in_("id", chunk).execute()
+
+    photo_count = _refresh_photo_count(sb, body.target_face_id)
+    return {
+        "target_face_id": body.target_face_id,
+        "merged_face_ids": source_ids,
+        "photo_count": photo_count,
+    }
+
+
 @router.get("/{face_id}/download")
 def download_face_photos(face_id: str):
     """Download all photos for a face cluster as a ZIP archive."""
@@ -153,6 +258,19 @@ def download_face_photos(face_id: str):
         filename=filename,
         background=BackgroundTask(_cleanup_file, zip_path),
     )
+
+
+@router.delete("/{face_id}")
+def delete_face(face_id: str, _: None = Depends(require_admin)):
+    """Delete one face cluster while keeping the original photos."""
+    sb = get_client()
+    face_res = sb.table("faces").select("id").eq("id", face_id).limit(1).execute()
+    if not (face_res.data or []):
+        raise HTTPException(status_code=404, detail="Face not found")
+
+    sb.table("photo_faces").delete().eq("face_id", face_id).execute()
+    sb.table("faces").delete().eq("id", face_id).execute()
+    return {"deleted_face_id": face_id}
 
 
 @router.get("/{face_id}/photos")

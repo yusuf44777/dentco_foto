@@ -23,6 +23,14 @@ pip install -r requirements.txt
 uvicorn app.main:app --reload   # http://localhost:8000
 ```
 
+Admin girişini açmak için backend ortam değişkenlerine şunları ekle:
+
+```bash
+ADMIN_PASSWORD="<güçlü-bir-şifre>"
+# İsteğe bağlı: şifre değişse bile mevcut oturum anahtarını ayrı tutmak için
+ADMIN_SESSION_SECRET="<uzun-rastgele-bir-değer>"
+```
+
 ### 3. Fotoğrafları Drive'dan İçe Aktar
 ```bash
 # Önce Supabase'de bir event oluştur, id'yi not al
@@ -90,6 +98,12 @@ dentco_foto/
         ├── lib/api.ts
         └── types/index.ts
 ```
+
+## Admin Araçları
+
+Frontend'deki `Admin girişi` düğmesi doğru şifreyle açıldığında yüz kartlarında seçim kontrolleri görünür.
+Seçilen yüzler `Birleştir` ile en çok fotoğrafa sahip seçili kişi altında toplanır; `Sil` ise seçili yüz kümesini
+galeriden kaldırır. Orijinal fotoğraflar silinmez.
 
 ## Eşik Ayarları
 `.env` içindeki `FACE_SIMILARITY_THRESHOLD=0.50` değeri:

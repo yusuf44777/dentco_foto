@@ -2,7 +2,7 @@ import logging
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.routers import events, faces, ingestion
+from app.routers import auth, events, faces, ingestion
 
 logging.basicConfig(
     level=logging.INFO,
@@ -31,6 +31,7 @@ app.add_middleware(
 app.include_router(events.router)
 app.include_router(faces.router)
 app.include_router(ingestion.router)
+app.include_router(auth.router)
 
 
 @app.get("/healthz")

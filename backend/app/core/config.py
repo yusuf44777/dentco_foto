@@ -4,6 +4,10 @@ class Settings(BaseSettings):
     supabase_url: str
     supabase_service_role_key: str
 
+    admin_password: str | None = None
+    admin_session_secret: str | None = None
+    admin_session_ttl_seconds: int = 43200
+
     google_drive_oauth_client_id: str | None = None
     google_drive_oauth_client_secret: str | None = None
     google_drive_oauth_refresh_token: str | None = None
