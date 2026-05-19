@@ -1,0 +1,27 @@
+# credentials - never commit
+.env
+.env.local
+.env.*.local
+
+# logs
+*.log
+
+# python
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+.mypy_cache/
+
+# node
+node_modules/
+frontend/dist/
+
+# macos
+.DS_Store
+
+# supabase temp
+supabase/.temp/
+
+# misc
+.python-version
