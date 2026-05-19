@@ -1,6 +1,6 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import type { Face, Photo } from "../types";
-import { ArrowLeft, Download, X, ChevronLeft, ChevronRight } from "lucide-react";
+import { ArrowLeft, Download, X, ChevronLeft, ChevronRight, ImageOff } from "lucide-react";
 
 interface Props {
   face: Face;
@@ -10,11 +10,20 @@ interface Props {
 
 export function PhotoGallery({ face, photos, onBack }: Props) {
   const [lightbox, setLightbox] = useState<number | null>(null);
+  const [failedIds, setFailedIds] = useState<Set<string>>(new Set());
 
   function openLightbox(idx: number) { setLightbox(idx); }
   function closeLightbox() { setLightbox(null); }
   function prev() { setLightbox((i) => (i! - 1 + photos.length) % photos.length); }
   function next() { setLightbox((i) => (i! + 1) % photos.length); }
+  function markFailed(photoId: string) {
+    setFailedIds((current) => new Set(current).add(photoId));
+  }
+
+  useEffect(() => {
+    setFailedIds(new Set());
+    setLightbox(null);
+  }, [face.id]);
 
   return (
     <section className="w-full animate-fade-in">
@@ -36,28 +45,53 @@ export function PhotoGallery({ face, photos, onBack }: Props) {
 
         <div>
           <h2 className="font-semibold text-gray-900">{face.label ?? "Kişi"}</h2>
-          <p className="text-xs text-gray-500">{photos.length} fotoğraf</p>
+          <p className="text-xs text-gray-500">
+            {photos.length} fotoğraf gösteriliyor
+            {failedIds.size > 0 ? ` · ${failedIds.size} görsel yüklenemedi` : ""}
+          </p>
         </div>
       </div>
 
-      {/* masonry grid */}
-      <div className="columns-2 gap-3 sm:columns-3 md:columns-4 lg:columns-5">
+      <div className="mb-4 flex items-center justify-between border-b border-gray-200 pb-3 text-xs text-gray-500">
+        <span>{photos.length} kayıt</span>
+        {failedIds.size > 0 && (
+          <span className="font-medium text-red-600">{failedIds.size} kırık görsel</span>
+        )}
+      </div>
+
+      {/* photo grid */}
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 xl:grid-cols-7">
         {photos.map((photo, idx) => (
-          <div
+          <button
+            type="button"
             key={photo.id}
-            className="mb-3 break-inside-avoid cursor-zoom-in overflow-hidden rounded-xl shadow-sm transition-transform hover:scale-[1.02]"
+            className="group relative aspect-square overflow-hidden rounded-xl bg-gray-100 text-left shadow-sm transition-transform hover:scale-[1.02] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500"
             onClick={() => openLightbox(idx)}
           >
-            <img
-              src={photo.url}
-              alt=""
-              className="w-full object-cover"
-              loading="lazy"
-              decoding="async"
-            />
-          </div>
+            {failedIds.has(photo.id) ? (
+              <div className="flex h-full w-full flex-col items-center justify-center gap-2 text-gray-400">
+                <ImageOff size={22} />
+                <span className="text-[11px]">Yüklenemedi</span>
+              </div>
+            ) : (
+              <img
+                src={photo.url}
+                alt=""
+                className="h-full w-full object-cover transition-transform group-hover:scale-105"
+                loading="lazy"
+                decoding="async"
+                onError={() => markFailed(photo.id)}
+              />
+            )}
+          </button>
         ))}
       </div>
+
+      {photos.length > 0 && (
+        <p className="mt-6 text-center text-xs text-gray-400">
+          {photos.length} fotoğraf listelendi
+        </p>
+      )}
 
       {photos.length === 0 && (
         <p className="mt-24 text-center text-sm text-gray-400">
