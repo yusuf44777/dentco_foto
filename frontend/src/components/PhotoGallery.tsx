@@ -2,10 +2,6 @@ import { useEffect, useState } from "react";
 import type { Face, Photo } from "../types";
 import { ArrowLeft, Download, X, ChevronLeft, ChevronRight, ImageOff } from "lucide-react";
 
-function thumbUrl(url: string, width: number, quality = 75): string {
-  return url.replace("/object/public/", "/render/image/public/") + `?width=${width}&quality=${quality}`;
-}
-
 interface Props {
   face: Face;
   photos: Photo[];
@@ -90,7 +86,7 @@ export function PhotoGallery({ face, photos, downloadUrl, onBack }: Props) {
               </div>
             ) : (
               <img
-                src={thumbUrl(photo.url, 400)}
+                src={photo.url}
                 alt=""
                 className="h-full w-full object-cover transition-transform group-hover:scale-105"
                 loading="lazy"
@@ -185,7 +181,7 @@ function Lightbox({ photo, index, total, onClose, onPrev, onNext }: LightboxProp
 
       {/* image */}
       <img
-        src={thumbUrl(photo.url, 1920, 85)}
+        src={photo.url}
         alt=""
         className="max-h-[90vh] max-w-[90vw] rounded-xl object-contain shadow-2xl"
         onClick={(e) => e.stopPropagation()}
